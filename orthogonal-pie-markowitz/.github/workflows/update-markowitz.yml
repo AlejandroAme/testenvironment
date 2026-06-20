@@ -1,0 +1,33 @@
+name: Update Orthogonal PIE Markowitz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r orthogonal-pie-markowitz/requirements.txt
+
+      - name: Run Markowitz analysis
+        run: python orthogonal-pie-markowitz/scripts/markowitz_orthogonal_pie.py
+
+      - name: Commit generated results
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update Orthogonal PIE Markowitz results"
+          file_pattern: docs/orthogonal-pie-markowitz/results.json docs/orthogonal-pie-markowitz/markowitz_results.xlsx
