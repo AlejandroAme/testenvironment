@@ -1,0 +1,15 @@
+{
+  "updated_at": null,
+  "risk_free_rate": 0.02,
+  "start": "2021-01-01",
+  "data_start": null,
+  "data_end": null,
+  "tickers": {},
+  "available_assets": [],
+  "summary": {},
+  "weights": {},
+  "annual_returns": {},
+  "correlation": {},
+  "frontier": [],
+  "notes": ["Run the GitHub Action to generate live results from Yahoo Finance."]
+}
