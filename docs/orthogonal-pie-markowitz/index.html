@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Orthogonal PIE · Markowitz</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root { --bg:#0b1020; --card:#111831; --muted:#9fb0d0; --text:#f4f7ff; --line:#223053; --accent:#7dd3fc; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:linear-gradient(180deg,#081020,#101832); color:var(--text); }
+    header { padding:32px 22px 18px; max-width:1200px; margin:auto; }
+    h1 { margin:0 0 8px; font-size:clamp(28px,5vw,48px); letter-spacing:-0.04em; }
+    p { color:var(--muted); line-height:1.45; }
+    main { max-width:1200px; margin:auto; padding:0 22px 40px; display:grid; gap:18px; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+    .card { background:rgba(17,24,49,.92); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 18px 50px rgba(0,0,0,.25); }
+    .metric { font-size:30px; font-weight:800; letter-spacing:-0.03em; }
+    .label { color:var(--muted); font-size:13px; }
+    .chart-card { min-height:520px; }
+    canvas { width:100%; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th,td { padding:9px 8px; border-bottom:1px solid var(--line); text-align:right; }
+    th:first-child,td:first-child { text-align:left; }
+    th { color:#cbd7f3; font-weight:700; }
+    .note { font-size:13px; color:var(--muted); }
+    .pill { display:inline-flex; gap:8px; align-items:center; border:1px solid var(--line); border-radius:999px; padding:7px 10px; color:#cbd7f3; font-size:13px; margin:4px 6px 0 0; }
+    a { color:var(--accent); }
+    @media (max-width:850px){ .grid{grid-template-columns:1fr;} .chart-card{min-height:420px;} }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Orthogonal PIE · Markowitz</h1>
+    <p>Frontera eficiente, cartera actual, máxima Sharpe y mínima varianza calculadas con precios ajustados de Yahoo Finance.</p>
+    <div id="meta"></div>
+  </header>
+
+  <main>
+    <section class="grid" id="cards"></section>
+
+    <section class="card chart-card">
+      <h2>Frontera eficiente</h2>
+      <canvas id="frontier"></canvas>
+    </section>
+
+    <section class="card">
+      <h2>Pesos óptimos</h2>
+      <div style="overflow:auto"><table id="weights"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Notas</h2>
+      <ul id="notes"></ul>
+      <p class="note">Para actualizar los datos, ejecuta el workflow <b>Update Orthogonal PIE Markowitz</b> en GitHub Actions.</p>
+    </section>
+  </main>
+
+<script>
+const pct = v => (v * 100).toFixed(2) + "%";
+const num = v => Number(v ?? 0);
+
+async function load() {
+  const res = await fetch("results.json?ts=" + Date.now());
+  const data = await res.json();
+
+  document.getElementById("meta").innerHTML = `
+    <span class="pill">Actualizado: ${data.updated_at || "pendiente"}</span>
+    <span class="pill">Periodo: ${data.data_start || "-"} → ${data.data_end || "-"}</span>
+    <span class="pill">Rf: ${pct(data.risk_free_rate || 0)}</span>
+  `;
+
+  const s = data.summary || {};
+  const blocks = [
+    ["Cartera actual", s.current],
+    ["Máxima Sharpe", s.max_sharpe],
+    ["Mínima varianza", s.minimum_variance]
+  ];
+  document.getElementById("cards").innerHTML = blocks.map(([name, m]) => `
+    <article class="card">
+      <div class="label">${name}</div>
+      <div class="metric">Sharpe ${m ? num(m.sharpe).toFixed(2) : "-"}</div>
+      <p>Retorno: <b>${m ? pct(m.return) : "-"}</b><br>Volatilidad: <b>${m ? pct(m.volatility) : "-"}</b></p>
+    </article>
+  `).join("");
+
+  const frontier = (data.frontier || []).map(p => ({ x: num(p.volatility) * 100, y: num(p.return) * 100, sharpe: num(p.sharpe) }));
+  const points = blocks.filter(([_, m]) => m).map(([name, m]) => ({ label:name, data:[{ x:num(m.volatility)*100, y:num(m.return)*100 }], pointRadius:8, pointHoverRadius:10 }));
+
+  new Chart(document.getElementById("frontier"), {
+    type: "scatter",
+    data: {
+      datasets: [
+        { label:"Carteras simuladas", data:frontier, pointRadius:2, pointHoverRadius:4 },
+        ...points
+      ]
+    },
+    options: {
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{ tooltip:{ callbacks:{ label: ctx => `${ctx.dataset.label}: vol ${ctx.parsed.x.toFixed(2)}%, ret ${ctx.parsed.y.toFixed(2)}%` } } },
+      scales:{ x:{ title:{display:true,text:"Volatilidad anualizada (%)"} }, y:{ title:{display:true,text:"Retorno anualizado (%)"} } }
+    }
+  });
+
+  const weights = data.weights || {};
+  const rows = Object.entries(weights).sort((a,b)=>a[0].localeCompare(b[0]));
+  document.getElementById("weights").innerHTML = `
+    <thead><tr><th>Activo</th><th>Actual</th><th>Máx. Sharpe</th><th>Mín. varianza</th></tr></thead>
+    <tbody>${rows.map(([asset,w]) => `<tr><td>${asset}</td><td>${pct(w.current)}</td><td>${pct(w.max_sharpe)}</td><td>${pct(w.minimum_variance)}</td></tr>`).join("")}</tbody>
+  `;
+
+  document.getElementById("notes").innerHTML = (data.notes || []).map(n => `<li class="note">${n}</li>`).join("");
+}
+
+load().catch(err => {
+  document.getElementById("cards").innerHTML = `<article class="card"><div class="metric">Error</div><p>${err.message}</p></article>`;
+});
+</script>
+</body>
+</html>
