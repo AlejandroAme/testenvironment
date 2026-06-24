@@ -55,23 +55,37 @@ SPECIAL_MAX = {
 DEFAULT_MAX = 0.25
 
 
-def portfolio_stats(weights, mean_returns, cov_matrix):
+def downside_deviation(portfolio_returns, target_return_monthly):
+    downside = np.minimum(portfolio_returns - target_return_monthly, 0.0)
+    return float(np.sqrt(np.mean(np.square(downside)) * 12.0))
+
+
+def portfolio_stats(weights, mean_returns, cov_matrix, returns_matrix):
     weights = np.asarray(weights)
     ret = float(np.dot(weights, mean_returns))
     vol = float(np.sqrt(weights.T @ cov_matrix @ weights))
     sharpe = float((ret - RISK_FREE_RATE) / vol) if vol else 0.0
-    return ret, vol, sharpe
+
+    portfolio_monthly_returns = returns_matrix @ weights
+    target_monthly = RISK_FREE_RATE / 12.0
+    dd = downside_deviation(portfolio_monthly_returns, target_monthly)
+    sortino = float((ret - RISK_FREE_RATE) / dd) if dd else 0.0
+    return ret, vol, sharpe, dd, sortino
 
 
-def negative_sharpe(weights, mean_returns, cov_matrix):
-    return -portfolio_stats(weights, mean_returns, cov_matrix)[2]
+def negative_sharpe(weights, mean_returns, cov_matrix, returns_matrix):
+    return -portfolio_stats(weights, mean_returns, cov_matrix, returns_matrix)[2]
 
 
-def portfolio_volatility(weights, mean_returns, cov_matrix):
-    return portfolio_stats(weights, mean_returns, cov_matrix)[1]
+def negative_sortino(weights, mean_returns, cov_matrix, returns_matrix):
+    return -portfolio_stats(weights, mean_returns, cov_matrix, returns_matrix)[4]
 
 
-def optimize(mean_returns, cov_matrix):
+def portfolio_volatility(weights, mean_returns, cov_matrix, returns_matrix):
+    return portfolio_stats(weights, mean_returns, cov_matrix, returns_matrix)[1]
+
+
+def optimize(mean_returns, cov_matrix, returns_matrix):
     names = list(mean_returns.index)
     bounds = [(0.0, SPECIAL_MAX.get(name, DEFAULT_MAX)) for name in names]
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
@@ -80,7 +94,17 @@ def optimize(mean_returns, cov_matrix):
     max_sharpe = minimize(
         negative_sharpe,
         x0,
-        args=(mean_returns, cov_matrix),
+        args=(mean_returns, cov_matrix, returns_matrix),
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 1000},
+    )
+
+    max_sortino = minimize(
+        negative_sortino,
+        x0,
+        args=(mean_returns, cov_matrix, returns_matrix),
         method="SLSQP",
         bounds=bounds,
         constraints=constraints,
@@ -90,7 +114,7 @@ def optimize(mean_returns, cov_matrix):
     min_var = minimize(
         portfolio_volatility,
         x0,
-        args=(mean_returns, cov_matrix),
+        args=(mean_returns, cov_matrix, returns_matrix),
         method="SLSQP",
         bounds=bounds,
         constraints=constraints,
@@ -99,10 +123,12 @@ def optimize(mean_returns, cov_matrix):
 
     if not max_sharpe.success:
         raise RuntimeError(f"Max Sharpe optimization failed: {max_sharpe.message}")
+    if not max_sortino.success:
+        raise RuntimeError(f"Max Sortino optimization failed: {max_sortino.message}")
     if not min_var.success:
         raise RuntimeError(f"Minimum variance optimization failed: {min_var.message}")
 
-    return max_sharpe.x, min_var.x
+    return max_sharpe.x, max_sortino.x, min_var.x
 
 
 def download_prices():
@@ -111,26 +137,24 @@ def download_prices():
     raw = yf.download(yahoo_tickers, start=START, auto_adjust=True, progress=False, threads=True)["Close"]
     raw = raw.rename(columns=inverse)
     raw = raw.dropna(axis=1, how="all")
-    # Keep only rows where all available assets have prices.
     raw = raw.dropna()
     if raw.empty:
         raise RuntimeError("No overlapping Yahoo Finance data after dropping missing values.")
     return raw
 
 
-def build_frontier(mean_returns, cov_matrix, available):
+def build_frontier(mean_returns, cov_matrix, returns_matrix, available):
     rng = np.random.default_rng(42)
     rows = []
     for _ in range(N_RANDOM_PORTFOLIOS):
-        # Dirichlet random weights, then clip key satellite max constraints and renormalize.
         w = rng.dirichlet(np.ones(len(available)))
         for i, name in enumerate(available):
             max_w = SPECIAL_MAX.get(name)
             if max_w is not None and w[i] > max_w:
                 w[i] = max_w
         w = w / w.sum()
-        ret, vol, sharpe = portfolio_stats(w, mean_returns, cov_matrix)
-        rows.append({"return": ret, "volatility": vol, "sharpe": sharpe})
+        ret, vol, sharpe, dd, sortino = portfolio_stats(w, mean_returns, cov_matrix, returns_matrix)
+        rows.append({"return": ret, "volatility": vol, "sharpe": sharpe, "downside_deviation": dd, "sortino": sortino})
     return rows
 
 
@@ -144,30 +168,35 @@ def main():
     mean_returns = monthly_returns.mean() * 12
     cov_matrix = monthly_returns.cov() * 12
     corr_matrix = monthly_returns.corr()
+    returns_matrix = monthly_returns.values
 
     available = list(mean_returns.index)
     current = CURRENT_WEIGHTS.loc[available]
     current = current / current.sum()
 
-    max_sharpe_w, min_var_w = optimize(mean_returns, cov_matrix)
+    max_sharpe_w, max_sortino_w, min_var_w = optimize(mean_returns, cov_matrix, returns_matrix)
 
-    current_stats = portfolio_stats(current.values, mean_returns, cov_matrix)
-    max_sharpe_stats = portfolio_stats(max_sharpe_w, mean_returns, cov_matrix)
-    min_var_stats = portfolio_stats(min_var_w, mean_returns, cov_matrix)
+    current_stats = portfolio_stats(current.values, mean_returns, cov_matrix, returns_matrix)
+    max_sharpe_stats = portfolio_stats(max_sharpe_w, mean_returns, cov_matrix, returns_matrix)
+    max_sortino_stats = portfolio_stats(max_sortino_w, mean_returns, cov_matrix, returns_matrix)
+    min_var_stats = portfolio_stats(min_var_w, mean_returns, cov_matrix, returns_matrix)
 
-    frontier = build_frontier(mean_returns, cov_matrix, available)
+    frontier = build_frontier(mean_returns, cov_matrix, returns_matrix, available)
 
     weights = pd.DataFrame({
         "current": current.values,
         "max_sharpe": max_sharpe_w,
+        "max_sortino": max_sortino_w,
         "minimum_variance": min_var_w,
     }, index=available)
 
     summary = pd.DataFrame({
-        "return": [current_stats[0], max_sharpe_stats[0], min_var_stats[0]],
-        "volatility": [current_stats[1], max_sharpe_stats[1], min_var_stats[1]],
-        "sharpe": [current_stats[2], max_sharpe_stats[2], min_var_stats[2]],
-    }, index=["current", "max_sharpe", "minimum_variance"])
+        "return": [current_stats[0], max_sharpe_stats[0], max_sortino_stats[0], min_var_stats[0]],
+        "volatility": [current_stats[1], max_sharpe_stats[1], max_sortino_stats[1], min_var_stats[1]],
+        "downside_deviation": [current_stats[3], max_sharpe_stats[3], max_sortino_stats[3], min_var_stats[3]],
+        "sharpe": [current_stats[2], max_sharpe_stats[2], max_sortino_stats[2], min_var_stats[2]],
+        "sortino": [current_stats[4], max_sharpe_stats[4], max_sortino_stats[4], min_var_stats[4]],
+    }, index=["current", "max_sharpe", "max_sortino", "minimum_variance"])
 
     results = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -184,6 +213,8 @@ def main():
         "frontier": frontier,
         "notes": [
             "Returns are calculated from Yahoo Finance adjusted close prices using monthly returns.",
+            "Sharpe uses total volatility; Sortino uses downside deviation only.",
+            "Sortino target return is the monthly equivalent of the annual risk-free rate.",
             "Optimization constraints: no shorts; 25% max per asset; BTIC, URNU, FUC and 34U capped at 5% each.",
             "Mixed listing currencies can affect an EUR investor's realized return. Prefer EUR-listed tickers where available for a cleaner EUR analysis.",
         ],
