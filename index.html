@@ -70,4 +70,5 @@ $('#quickRandom').onclick=()=>{
   start();
 };
 $('#next').onclick=next;$('#prev').onclick=prev;$('#mistakes').onclick=()=>{let ids=state().mistakes||[];if(!ids.length){alert('No tienes fallos guardados.');return}start(ids.map(i=>BANK[i]).filter(Boolean))};$('#clear').onclick=()=>{if(confirm('¿Borrar todo el progreso guardado?')){localStorage.removeItem('fyqQuizState');updateStats()}};document.addEventListener('keydown',e=>{if(e.key>='1'&&e.key<='4')choose(parseInt(e.key)-1);if(e.key==='ArrowRight')next();if(e.key==='ArrowLeft')prev()});start();updateStats();
-</script></body></html>
+</script><!-- gh-pages deploy trigger -->
+</body></html>
